@@ -1,0 +1,141 @@
+# Shared Gemini code review — the one place the model and the retry/backoff
+# behaviour are configured for every repository.
+#
+# Consumers keep only their triggers (see the skeleton below) and their own
+# .github/gemini-review.yml, which carries the repo-specific review
+# instructions and ignore globs. The model deliberately does NOT live there
+# any more: changing it here changes it everywhere.
+#
+# Consuming repositories:
+#   - morgado-ricardo/homeassistant
+#   - morgado-ricardo/homelab
+#   - morgado-ricardo/cv
+#
+# Two setup requirements:
+#   1. This repo needs Settings → Actions → General → Access set to
+#      "Accessible from repositories owned by the morgado-ricardo user",
+#      otherwise private consumers cannot call this workflow.
+#   2. Each consumer needs its own GEMINI_API_KEY secret — secrets never
+#      cross repositories.
+#
+# Caller skeleton (identical in all three consumers):
+#
+#   name: Gemini code review
+#   on:
+#     pull_request:
+#       types: [opened, synchronize]
+#     issue_comment:
+#       types: [created]
+#   jobs:
+#     review:
+#       uses: morgado-ricardo/ci-shared/.github/workflows/gemini-review.yml@main
+#       permissions:
+#         contents: read
+#         pull-requests: write
+#       secrets:
+#         gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+#
+# Action: https://github.com/jgunnink/gemini-review-bot
+name: Gemini code review (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: >-
+          Gemini model id. Pinned to a specific GA release on purpose — the
+          floating `gemini-flash-latest` alias hot-swaps onto each new Flash
+          release, preview ones included, and a just-launched model is exactly
+          the one returning 503 "high demand" while Google grows capacity.
+        type: string
+        required: false
+        default: gemini-3.5-flash
+      fallback_model:
+        description: >-
+          Tried when the primary model is unavailable. A capacity spike hits
+          one model's serving pool at a time, so a second model usually
+          answers when the first will not.
+        type: string
+        required: false
+        default: gemini-3.7-flash
+      retry_delay_seconds:
+        description: >-
+          Wait between the two attempts. The action retries a 503 three times
+          over ~40s internally, which is nothing next to a demand spike.
+        type: number
+        required: false
+        default: 120
+    secrets:
+      gemini_api_key:
+        description: Google AI Studio API key belonging to the calling repository.
+        required: true
+
+jobs:
+  review:
+    # PR events, or a /gemini-review comment on a PR. The github context here
+    # is the caller's event.
+    if: >
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       startsWith(github.event.comment.body, '/gemini-review'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # A new push supersedes the review in flight — no point spending quota on
+    # a diff nobody will look at.
+    concurrency:
+      group: >-
+        gemini-review-${{ github.repository }}-${{
+          github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pull requests from forks do not get repository secrets. Skip quietly
+      # rather than fail a run on something the contributor cannot fix.
+      - id: guard
+        env:
+          KEY: ${{ secrets.gemini_api_key }}
+        run: |
+          if [ -n "$KEY" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "No GEMINI_API_KEY available (fork PR?) — review skipped." \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - id: review
+        if: steps.guard.outputs.ok == 'true'
+        uses: jgunnink/gemini-review-bot@v1
+        continue-on-error: true
+        with:
+          gemini_api_key: ${{ secrets.gemini_api_key }}
+          model: ${{ inputs.model }}
+
+      - if: steps.review.outcome == 'failure'
+        run: sleep ${{ inputs.retry_delay_seconds }}
+
+      - id: review_fallback
+        if: steps.review.outcome == 'failure'
+        uses: jgunnink/gemini-review-bot@v1
+        continue-on-error: true
+        with:
+          gemini_api_key: ${{ secrets.gemini_api_key }}
+          model: ${{ inputs.fallback_model }}
+
+      # Both attempts failed: say so in the run summary and stop. The review
+      # is advisory, so a Google-side outage must not block the PR.
+      - if: >
+          steps.review.outcome == 'failure' &&
+          steps.review_fallback.outcome == 'failure'
+        run: |
+          {
+            echo "### Gemini review skipped"
+            echo
+            echo "Both \`${{ inputs.model }}\` and \`${{ inputs.fallback_model }}\`"
+            echo "failed — usually a 503 \`UNAVAILABLE\` (\"high demand\") from the"
+            echo "Gemini API."
+            echo
+            echo "Comment \`/gemini-review\` on the PR to try again."
+          } >> "$GITHUB_STEP_SUMMARY"
