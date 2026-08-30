@@ -56,6 +56,14 @@ on:
 
 jobs:
   review:
+    # Gate at the caller: without this GitHub spawns a run for every comment
+    # on every issue before discovering the called job is skipped. The shared
+    # workflow repeats the condition as a safety net.
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       startsWith(github.event.comment.body, '/gemini-review'))
     uses: morgado-ricardo/ci-shared/.github/workflows/gemini-review.yml@main
     # Granted here, not in the shared workflow: a called workflow can only
     # narrow the caller's permissions, never widen them.
@@ -74,6 +82,24 @@ Two things the consumer keeps for itself:
 - The `GEMINI_API_KEY` secret. Secrets never cross repositories.
 
 Re-run a review on demand by commenting `/gemini-review` on a pull request.
+Note that `issue_comment` is not a pull-request event, so GitHub runs the
+caller workflow **from the default branch**, not from the PR head — a comment
+will not exercise caller changes that are still unmerged.
+
+#### Why `@main` and not a pinned SHA
+
+Deliberate. The mutable reference is the entire point: a change here has to
+reach every consumer without a commit in each of them, which is the problem
+this repo exists to solve. Pinning consumers to a SHA or a release tag would
+reintroduce exactly the per-repo update work that made `gemini-flash-latest`
+go unfixed in three places at once.
+
+The usual argument for SHA-pinning is supply-chain risk from a third-party
+action you do not control. That does not apply here: this is a private repo
+owned by the same account as its consumers, and the only third-party action it
+calls (`jgunnink/gemini-review-bot@v1`) is referenced from here, so its version
+is itself centrally controlled. The blast radius of a bad commit is an advisory
+review job that is already `continue-on-error`.
 
 #### Current consumers
 

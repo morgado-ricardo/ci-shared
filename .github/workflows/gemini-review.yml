@@ -28,6 +28,13 @@
 #       types: [created]
 #   jobs:
 #     review:
+#       # Gate at the caller: without this GitHub spawns a run for every
+#       # comment on every issue before discovering the called job is skipped.
+#       if: >-
+#         github.event_name == 'pull_request' ||
+#         (github.event_name == 'issue_comment' &&
+#          github.event.issue.pull_request &&
+#          startsWith(github.event.comment.body, '/gemini-review'))
 #       uses: morgado-ricardo/ci-shared/.github/workflows/gemini-review.yml@main
 #       permissions:
 #         contents: read
@@ -73,7 +80,9 @@ on:
 jobs:
   review:
     # PR events, or a /gemini-review comment on a PR. The github context here
-    # is the caller's event.
+    # is the caller's event. Callers carry this same condition — theirs stops
+    # the run being created at all; this one is the safety net for a consumer
+    # that omits it.
     if: >
       github.event_name == 'pull_request' ||
       (github.event_name == 'issue_comment' &&
