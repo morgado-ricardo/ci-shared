@@ -7,14 +7,19 @@
 # any more: changing it here changes it everywhere.
 #
 # Consuming repositories:
-#   - morgado-ricardo/homeassistant
-#   - morgado-ricardo/homelab
-#   - morgado-ricardo/cv
+#   - morgado-ricardo/homeassistant   (private)
+#   - morgado-ricardo/homelab         (private)
+#   - morgado-ricardo/cv              (private)
+#   - morgado-ricardo/ev-plug-charging (public)
 #
 # Two setup requirements:
-#   1. This repo needs Settings → Actions → General → Access set to
-#      "Accessible from repositories owned by the morgado-ricardo user",
-#      otherwise private consumers cannot call this workflow.
+#   1. THIS REPO MUST STAY PUBLIC. A public repository cannot call a
+#      reusable workflow from a private one, and GitHub gives no useful
+#      error when it tries: the run fails in 0 seconds with 0 jobs, which
+#      looks exactly like a typo in the path. Making this repo private
+#      again silently breaks every public consumer. (The old
+#      Settings → Actions → General → Access requirement is moot now: a
+#      public repo's workflows are callable by anyone.)
 #   2. Each consumer needs its own GEMINI_API_KEY secret — secrets never
 #      cross repositories.
 #
