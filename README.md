@@ -95,21 +95,37 @@ reintroduce exactly the per-repo update work that made `gemini-flash-latest`
 go unfixed in three places at once.
 
 The usual argument for SHA-pinning is supply-chain risk from a third-party
-action you do not control. That does not apply here: this is a private repo
-owned by the same account as its consumers, and the only third-party action it
-calls (`jgunnink/gemini-review-bot@v1`) is referenced from here, so its version
-is itself centrally controlled. The blast radius of a bad commit is an advisory
-review job that is already `continue-on-error`.
+action you do not control. That does not apply here: this repo is public to
+read but writable only by the account that owns its consumers, and the only
+third-party action it calls (`jgunnink/gemini-review-bot@v1`) is referenced
+from here, so its version is itself centrally controlled. The blast radius of
+a bad commit is an advisory review job that is already `continue-on-error`.
 
 #### Current consumers
 
-- [`morgado-ricardo/homeassistant`](https://github.com/morgado-ricardo/homeassistant)
-- [`morgado-ricardo/homelab`](https://github.com/morgado-ricardo/homelab)
-- [`morgado-ricardo/cv`](https://github.com/morgado-ricardo/cv)
+| Consumer | Visibility |
+| --- | --- |
+| [`morgado-ricardo/homeassistant`](https://github.com/morgado-ricardo/homeassistant) | private |
+| [`morgado-ricardo/homelab`](https://github.com/morgado-ricardo/homelab) | private |
+| [`morgado-ricardo/cv`](https://github.com/morgado-ricardo/cv) | private |
+| [`morgado-ricardo/ev-plug-charging`](https://github.com/morgado-ricardo/ev-plug-charging) | **public** |
 
 ## Repository setup
 
-This repo is private, so **Settings → Actions → General → Access** must be set
-to *"Accessible from repositories owned by the morgado-ricardo user"*.
-Without it, callers fail with "workflow not found" — which looks exactly like
-the file being missing.
+**This repo must stay public.** Not for the usual reasons — nothing here needs
+publishing — but because a **public** repository cannot call a reusable
+workflow from a **private** one. GitHub's "share a private repo's workflows
+with the rest of the account" setting only reaches private consumers.
+
+That is not a hypothetical: it was found the hard way. While this repo was
+private, `ev-plug-charging` (public) was wired up exactly like the other three
+and every run failed **in 0 seconds with 0 jobs** — GitHub could not resolve
+the `uses:` reference, so it failed the run before creating a job. There is no
+error message pointing at visibility; the failure looks identical to a typo in
+the path or a missing file.
+
+Making it private again silently breaks every public consumer.
+
+Note the old **Settings → Actions → General → Access** requirement is now moot:
+a public repo's reusable workflows are callable by anyone, so the setting has
+nothing left to grant. It only mattered while this repo was private.
