@@ -59,17 +59,26 @@ on:
           floating `gemini-flash-latest` alias hot-swaps onto each new Flash
           release, preview ones included, and a just-launched model is exactly
           the one returning 503 "high demand" while Google grows capacity.
+          gemini-3.5-flash was deprecated on 2026-10-08 and every request to it
+          is now auto-routed server-side to gemini-3.6-flash regardless of what
+          this input says — the default names 3.6 directly so the config
+          documents what's actually serving instead of a dead alias.
         type: string
         required: false
-        default: gemini-3.5-flash
+        default: gemini-3.6-flash
       fallback_model:
         description: >-
           Tried when the primary model is unavailable. A capacity spike hits
           one model's serving pool at a time, so a second model usually
-          answers when the first will not.
+          answers when the first will not. gemini-3.7-flash was deprecated on
+          2026-10-08 and auto-routes to gemini-3.8-flash server-side; same
+          reasoning as `model` above for naming 3.8 directly. 3.8-flash still
+          has open high-demand/capacity reports as of 2026-10-20, so this is
+          not a claim that it's trouble-free — only that it's what's actually
+          being called either way.
         type: string
         required: false
-        default: gemini-3.7-flash
+        default: gemini-3.8-flash
       retry_delay_seconds:
         description: >-
           Wait between the two attempts. The action retries a 503 three times
