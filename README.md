@@ -32,9 +32,17 @@ and adds what that action doesn't do itself:
 
 | Input | Default | Purpose |
 | --- | --- | --- |
-| `model` | `gemini-3.5-flash` | Primary model. **Change it here to change it everywhere.** |
-| `fallback_model` | `gemini-3.7-flash` | Tried when the primary is unavailable. |
+| `model` | `gemini-3.6-flash` | Primary model. **Change it here to change it everywhere.** |
+| `fallback_model` | `gemini-3.8-flash` | Tried when the primary is unavailable. |
 | `retry_delay_seconds` | `120` | Wait between the two attempts. |
+
+Google deprecated `gemini-3.5-flash` and `gemini-3.7-flash` on 2026-10-08.
+Neither is shutting down, but every request to either is now auto-routed
+server-side to `gemini-3.6-flash` / `gemini-3.8-flash` respectively, no matter
+what the config says — so the defaults above name the model that's actually
+serving instead of a deprecated alias. `gemini-3.8-flash` still has open
+high-demand/capacity reports as recently as 2026-10-20; naming it here isn't a
+claim that it's trouble-free, just that it's what's being called either way.
 
 Required secret: `gemini_api_key` (a Google AI Studio key belonging to the
 calling repository).
