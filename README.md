@@ -6,59 +6,58 @@ commit needed in the consumers.
 
 ## Workflows
 
-### `.github/workflows/gemini-review.yml` — Gemini code review
+### `.github/workflows/claude-review.yml` — Claude code review
 
-AI code review via Google's Gemini API, a free self-hosted replacement for the
-sunset Gemini Code Assist bot. Wraps
-[`jgunnink/gemini-review-bot`](https://github.com/jgunnink/gemini-review-bot)
-and adds what that action doesn't do itself:
+AI code review with
+[`anthropics/claude-code-action`](https://github.com/anthropics/claude-code-action),
+authenticated with a Claude Pro/Max subscription. It replaces the earlier
+Gemini review (`jgunnink/gemini-review-bot`). That bot sent the diff to Gemini
+Flash in one call and never saw the rest of the repository, so its reviews
+were shallow. Claude Code works as an agent. It checks out the PR head with
+full history, reads the code around each change, and posts findings as inline
+comments plus one summary comment.
 
-- **A pinned GA model** instead of the floating `gemini-flash-latest` alias.
-  That alias hot-swaps onto each new Flash release, preview ones included, and
-  a just-launched model is exactly the one returning `503` "high demand" while
-  Google grows capacity. This was the cause of constant CI failures.
-- **A fallback model** on a second attempt. A capacity spike hits one model's
-  serving pool at a time, so the other usually answers.
-- **A longer retry window.** The action retries a 503 three times over ~40s
-  internally, which is nothing next to a demand spike; a wait between the two
-  attempts spreads them over minutes.
-- **`continue-on-error` on both attempts**, with a run-summary note when
-  neither lands. The review is advisory and must never block a merge on a
-  provider outage.
-- **A fork-PR guard.** Pull requests from forks don't get repository secrets;
-  skip quietly rather than fail on something the contributor cannot fix.
+What the shared workflow adds on top of the action:
+
+- **One model for every repo.** Change the `model` default here and every
+  consumer uses it on its next run.
+- **A review prompt tuned for signal.** It asks for bugs, security problems
+  and broken edge cases, with no praise and no nits unless they hide a real
+  problem. Each repo's own `CLAUDE.md` / `REVIEW.md` adds its own guidance.
+- **A short tool allowlist.** The agent can read the checkout, run
+  `gh pr view|diff|comment`, and post inline comments. It can do nothing else.
+- **`continue-on-error`**, with a note in the run summary when the review
+  fails. The review is advisory, so a usage limit or an expired token must
+  never block a merge.
+- **A fork-PR guard.** Pull requests from forks don't get repository secrets.
+  The workflow skips quietly instead of failing on something the contributor
+  cannot fix.
+- **An author check on `/claude-review`.** Only `OWNER`, `MEMBER` and
+  `COLLABORATOR` comments trigger a review. A comment-triggered run has the
+  secret and checks out the PR head, and anyone can comment on a public repo.
 - **A concurrency group**, so a new push cancels the review in flight instead
-  of spending quota on a superseded diff.
+  of spending usage on a superseded diff.
 
 | Input | Default | Purpose |
 | --- | --- | --- |
-| `model` | `gemini-3.6-flash` | Primary model. **Change it here to change it everywhere.** |
-| `fallback_model` | `gemini-3.8-flash` | Tried when the primary is unavailable. |
-| `retry_delay_seconds` | `120` | Wait between the two attempts. |
+| `model` | `claude-opus-5-5` | Review model. **Change it here to change it everywhere.** Switch to a Sonnet model if reviews use too much of the subscription. |
+| `max_turns` | `30` | Upper bound on agent turns per review. |
 
-Google deprecated `gemini-3.5-flash` and `gemini-3.7-flash` on 2026-10-08.
-Neither is shutting down, but every request to either is now auto-routed
-server-side to `gemini-3.6-flash` / `gemini-3.8-flash` respectively, no matter
-what the config says — so the defaults above name the model that's actually
-serving instead of a deprecated alias. `gemini-3.8-flash` still has open
-high-demand/capacity reports as recently as 2026-10-20; naming it here isn't a
-claim that it's trouble-free, just that it's what's being called either way.
-
-Required secret: `gemini_api_key` (a Google AI Studio key belonging to the
-calling repository).
+Required secret: `claude_code_oauth_token`. Run `claude setup-token` locally
+once, then store the result as `CLAUDE_CODE_OAUTH_TOKEN` in each consumer.
 
 #### Consuming it
 
-Add this as `.github/workflows/gemini-review.yml` in the consumer. It is
-identical in every repo — only the triggers live here, because GitHub does not
-let a called workflow declare its own.
+Add this as `.github/workflows/claude-review.yml` in the consumer. It is the
+same in every repo. Only the triggers live in the consumer, because GitHub
+does not let a called workflow declare its own.
 
 ```yaml
-name: Gemini code review
+name: Claude code review
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, ready_for_review, reopened]
   issue_comment:
     types: [created]
 
@@ -71,28 +70,31 @@ jobs:
       github.event_name == 'pull_request' ||
       (github.event_name == 'issue_comment' &&
        github.event.issue.pull_request &&
-       startsWith(github.event.comment.body, '/gemini-review'))
-    uses: morgado-ricardo/ci-shared/.github/workflows/gemini-review.yml@main
+       startsWith(github.event.comment.body, '/claude-review'))
+    uses: morgado-ricardo/ci-shared/.github/workflows/claude-review.yml@main
     # Granted here, not in the shared workflow: a called workflow can only
-    # narrow the caller's permissions, never widen them.
+    # narrow the caller's permissions, never widen them. issues: write is for
+    # the summary comment (PR comments go through the issues API).
     permissions:
       contents: read
       pull-requests: write
+      issues: write
     secrets:
-      gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+      claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
 
 Two things the consumer keeps for itself:
 
-- `.github/gemini-review.yml` — repo-specific review instructions and ignore
-  globs. Do **not** set `model` there; the shared workflow passes it as an
-  action input, which overrides the config file.
-- The `GEMINI_API_KEY` secret. Secrets never cross repositories.
+- `CLAUDE.md` or `REVIEW.md` at the repository root, with repo-specific
+  review guidance. This replaces the old `.github/gemini-review.yml`.
+  Delete that file when migrating.
+- The `CLAUDE_CODE_OAUTH_TOKEN` secret. Secrets never cross repositories.
 
-Re-run a review on demand by commenting `/gemini-review` on a pull request.
-Note that `issue_comment` is not a pull-request event, so GitHub runs the
-caller workflow **from the default branch**, not from the PR head — a comment
-will not exercise caller changes that are still unmerged.
+Comment `/claude-review` on a pull request to re-run a review.
+`issue_comment` is not a pull-request event, so GitHub runs the caller
+workflow **from the default branch**. The shared workflow still checks out the
+PR head for the review itself, but a comment will not exercise changes to the
+caller file that are still unmerged.
 
 #### Why `@main` and not a pinned SHA
 
@@ -100,12 +102,12 @@ Deliberate. The mutable reference is the entire point: a change here has to
 reach every consumer without a commit in each of them, which is the problem
 this repo exists to solve. Pinning consumers to a SHA or a release tag would
 reintroduce exactly the per-repo update work that made `gemini-flash-latest`
-go unfixed in three places at once.
+go unfixed in three places at once back in the Gemini days.
 
 The usual argument for SHA-pinning is supply-chain risk from a third-party
 action you do not control. That does not apply here: this repo is public to
 read but writable only by the account that owns its consumers, and the only
-third-party action it calls (`jgunnink/gemini-review-bot@v1`) is referenced
+third-party action it calls (`anthropics/claude-code-action@v1`) is referenced
 from here, so its version is itself centrally controlled. The blast radius of
 a bad commit is an advisory review job that is already `continue-on-error`.
 

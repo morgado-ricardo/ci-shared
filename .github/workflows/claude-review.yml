@@ -1,0 +1,175 @@
+# Shared Claude code review — the one place the model and review behaviour
+# are configured for every repository.
+#
+# Consumers keep only their triggers (see the skeleton below), their own
+# CLAUDE.md / REVIEW.md with repo-specific review guidance, and their own
+# CLAUDE_CODE_OAUTH_TOKEN secret. The model deliberately does NOT live there:
+# changing it here changes it everywhere.
+#
+# Consuming repositories:
+#   - morgado-ricardo/homeassistant   (private)
+#   - morgado-ricardo/homelab         (private)
+#   - morgado-ricardo/cv              (private)
+#   - morgado-ricardo/ev-plug-charging (public)
+#
+# Two setup requirements:
+#   1. THIS REPO MUST STAY PUBLIC. A public repository cannot call a
+#      reusable workflow from a private one, and GitHub gives no useful
+#      error when it tries: the run fails in 0 seconds with 0 jobs, which
+#      looks exactly like a typo in the path. Making this repo private
+#      again silently breaks every public consumer.
+#   2. Each consumer needs its own CLAUDE_CODE_OAUTH_TOKEN secret (from
+#      `claude setup-token`) — secrets never cross repositories.
+#
+# Caller skeleton (identical in all consumers):
+#
+#   name: Claude code review
+#   on:
+#     pull_request:
+#       types: [opened, synchronize, ready_for_review, reopened]
+#     issue_comment:
+#       types: [created]
+#   jobs:
+#     review:
+#       # Gate at the caller: without this GitHub spawns a run for every
+#       # comment on every issue before discovering the called job is skipped.
+#       if: >-
+#         github.event_name == 'pull_request' ||
+#         (github.event_name == 'issue_comment' &&
+#          github.event.issue.pull_request &&
+#          startsWith(github.event.comment.body, '/claude-review'))
+#       uses: morgado-ricardo/ci-shared/.github/workflows/claude-review.yml@main
+#       permissions:
+#         contents: read
+#         pull-requests: write
+#         issues: write
+#       secrets:
+#         claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+#
+# Action: https://github.com/anthropics/claude-code-action
+name: Claude code review (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: >-
+          Claude model id. Change it here to change it everywhere. Drop to a
+          Sonnet model if reviews eat too much of the subscription's usage.
+        type: string
+        required: false
+        default: claude-opus-5-5
+      max_turns:
+        description: >-
+          Upper bound on agent turns per review — enough to read the diff,
+          open the files around it and post comments, without letting a
+          confused run burn usage indefinitely.
+        type: number
+        required: false
+        default: 30
+    secrets:
+      claude_code_oauth_token:
+        description: >-
+          Claude Pro/Max OAuth token (`claude setup-token`) belonging to the
+          calling repository.
+        required: true
+
+jobs:
+  review:
+    # PR events, or a /claude-review comment on a PR from someone with write
+    # access. The github context here is the caller's event. Callers carry the
+    # event/body condition — theirs stops the run being created at all; this
+    # one is the safety net, plus the author check: on a public consumer anyone
+    # can comment, and a comment-triggered run has the secret and checks out
+    # the PR head, which may come from a fork.
+    if: >
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       startsWith(github.event.comment.body, '/claude-review') &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'),
+                github.event.comment.author_association))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # A new push supersedes the review in flight — no point spending usage on
+    # a diff nobody will look at.
+    concurrency:
+      group: >-
+        claude-review-${{ github.repository }}-${{
+          github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
+    steps:
+      # Pull requests from forks do not get repository secrets. Skip quietly
+      # rather than fail a run on something the contributor cannot fix.
+      - id: guard
+        env:
+          TOKEN: ${{ secrets.claude_code_oauth_token }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "No CLAUDE_CODE_OAUTH_TOKEN available (fork PR?) — review skipped." \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Full history so the agent can diff against the base and read the code
+      # around each change — the context the old diff-only bot never had.
+      # issue_comment runs on the default branch, so point it at the PR head.
+      - if: steps.guard.outputs.ok == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: >-
+            ${{ github.event_name == 'issue_comment' &&
+                format('refs/pull/{0}/head', github.event.issue.number) || '' }}
+
+      # The review is advisory, so a usage limit or provider outage must not
+      # block the PR.
+      - id: review
+        if: steps.guard.outputs.ok == 'true'
+        uses: anthropics/claude-code-action@v1
+        continue-on-error: true
+        with:
+          claude_code_oauth_token: ${{ secrets.claude_code_oauth_token }}
+          # The workflow token, not the Claude GitHub App: nothing to install
+          # per repo, and no id-token permission for callers to grant.
+          github_token: ${{ github.token }}
+          track_progress: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+
+            Review this pull request. The PR head is checked out with full
+            history; use `gh pr view` and `gh pr diff` for the description and
+            the change, and read the surrounding code wherever a change
+            depends on it.
+
+            Follow any review guidance in the repository's CLAUDE.md or
+            REVIEW.md.
+
+            Focus on what would matter to the author before merging: bugs and
+            wrong behaviour, security problems, broken edge cases, and changes
+            that do not do what the PR says. Report a style point or nit only
+            when it hides a real problem. Do not praise, do not restate the
+            diff, and do not invent problems: if the PR is fine, say so in
+            one line.
+
+            Post each finding as an inline comment on the line it concerns
+            (mcp__github_inline_comment__create_inline_comment), then post
+            one short summary comment with `gh pr comment`.
+          claude_args: >-
+            --model ${{ inputs.model }}
+            --max-turns ${{ inputs.max_turns }}
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+
+      - if: steps.review.outcome == 'failure'
+        run: |
+          {
+            echo "### Claude review skipped"
+            echo
+            echo "The review step failed — usually a usage limit on the"
+            echo "subscription or an expired \`CLAUDE_CODE_OAUTH_TOKEN\`."
+            echo
+            echo "Comment \`/claude-review\` on the PR to try again."
+          } >> "$GITHUB_STEP_SUMMARY"
