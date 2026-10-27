@@ -117,7 +117,7 @@ jobs:
       # around each change — the context the old diff-only bot never had.
       # issue_comment runs on the default branch, so point it at the PR head.
       - if: steps.guard.outputs.ok == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: >-
